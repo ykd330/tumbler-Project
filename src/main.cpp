@@ -17,9 +17,6 @@
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 //OLED display 함수
 void mainDisplayPrint(); // display 함수 선언부
-void DisplayPrintNStop();
-void DisplayPrintNActive(); 
-void DisplayPrintNKeep(); 
 void displayPrint(const char *text);
 
 /*-----Temperature Sensor Setting-----*/
@@ -27,16 +24,16 @@ void displayPrint(const char *text);
 #define ONE_WIRE_BUS 4 // DS18B20 센서의 데이터 핀을 GPIO 4번에 연결
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
-float temperatureC = 0; // 현재 온도 저장 변수
+static float temperatureC = 0; // 현재 온도 저장 변수
 // SYSTEM 기본 온도 설정
-float setTemperature = 30;
+float userSetTemperature = 30;
 
 /*-----작동 모드-----*/
 //시스템 작동 모드 설정
 #define STOP_MODE 0 // 정지 모드
 #define ACTIVE_MODE 1 // 활성화 모드
 #define KEEP_TEMPERATURE_MODE 2 // 유지 모드
-volatile static char user_control_mode = STOP_MODE; // 사용자 선택 모드 저장 변수 / 기본 : 정지 모드
+
 //열전소자 작동 모드 설정 
 #define HEATER_MODE 3 // 가열 모드
 #define COOLER_MODE 4 // 냉각 모드
@@ -50,11 +47,14 @@ char control_mode = STOP_MODE; // 초기 모드 설정
 // 모드 변경 버튼 설정
 #define BUTTON_ENTER 7 // GPIO 7번에 연결, 모드 변경 버튼
 volatile static char lastControlMode = STOP_MODE; // 마지막 모드 저장 변수
+volatile static char user_control_mode = STOP_MODE; // 사용자 선택 모드 저장 변수 / 기본 : 정지 모드
+volatile static char user_enter = false; // 사용자 선택 모드 저장 변수 / 기본 : 정지 모드
+volatile static char keep_stop = false; // 사용자 모드 저장 변수 / 기본 : 정지 모드
 
 // 열전소자 모드 제어
-#define HEATER_PIN 10 // 가열 모드
-#define COOLER_PIN 11 // 냉각 모드
-#define ACTIVE_PIN 12 // 활성화 핀 (가열/냉각 모드에 따라 설정)
+#define HEATER_PIN 3 // 가열 모드
+#define COOLER_PIN 2 // 냉각 모드
+#define ACTIVE_PIN 1 // 활성화 핀 (가열/냉각 모드에 따라 설정)
 
 
 
@@ -72,18 +72,15 @@ volatile static char lastControlMode = STOP_MODE; // 마지막 모드 저장 변
 float pwmValue = 0;
 
 // Interrupt 버튼 함수 선언부
-void IRAM_ATTR Button_up();
-void IRAM_ATTR Button_down();
-void IRAM_ATTR Enter_func();
-void IRAM_ATTR Active(); // 활성화 핀에 대한 인터럽트 함수
+void IRAM_ATTR upButtonF();
+void IRAM_ATTR downButtonF();
+void IRAM_ATTR bootButtonF();
 void changeControlMode(char control_mode); // 모드 변경 함수
+// Interrupt 버튼 변수 선언부
+unsigned char bootButton = false;
+unsigned char upButton = false; // 설정온도 상승 버튼 상태 변수
+unsigned char downButton = false; // 설정온도 하강 버튼 상태 변수
 
-/*-----바운싱으로 인한 입력 값 오류 제거용-----*/
-volatile unsigned long lastDebounceTimeUp = 0;   // BUTTON_UP 디바운싱 시간
-volatile unsigned long lastDebounceTimeDown = 0; // BUTTON_DOWN 디바운싱 시간
-volatile unsigned long lastDebounceTimeMode = 0; // BUTTON_MODE 디바운싱 시간
-volatile unsigned long lastActiveTime = 0;       // ACTIVE_PIN 디바운싱 시간
-const unsigned long debounceDelay = 50;          // 디바운싱 지연 시간 (밀리초)
 
 // active pin 설정
 char activecontrol = 0; // 활성화 핀 상태 변수
@@ -94,12 +91,12 @@ GPIO 3 : PWM 핀
 GPIO 4 : DS18B20 데이터 핀
 GPIO 5 : 설정온도 상승 버튼 핀
 GPIO 6 : 설정온도 하강 버튼 핀
-GPIO 7 : 모드 변경 버튼 핀
+GPIO 7 : 확인
 GPIO 8 : DISPLAY 핀 I2C SCL
 GPIO 9 : DISPLAY 핀 I2C SDA 
-GPIO 10 : 가열 모드 핀 (OUTPUT)
-GPIO 11 : 냉각 모드 핀 (OUTPUT)
-GPIO 12 : 시스템 설정 핀
+GPIO 10 : 가열 모드 핀 (OUTPUT) -> 3
+GPIO 11 : 냉각 모드 핀 (OUTPUT) -> 2
+GPIO 12 : 시스템 설정 핀 -> 1
 */
 
 /*------setup------*/
@@ -120,7 +117,7 @@ void setup()
   sensors.begin(); // DS18B20 센서 초기화
   sensors.setWaitForConversion(false); // 비동기식으로 온도 측정
   sensors.requestTemperatures(); // 온도 측정 요청
-
+  
   /*------display설정부------*/
   if (!display.begin(SSD1306_I2C_ADDRESS, SSD1306_I2C_ADDRESS))
   {
@@ -133,15 +130,14 @@ void setup()
   display.setTextColor(SSD1306_WHITE);
 
   /*------Interrupt설정부------*/
-  attachInterrupt(BUTTON_UP, Button_up, FALLING);
-  attachInterrupt(BUTTON_DOWN, Button_down, FALLING);
-  attachInterrupt(BUTTON_ENTER, Enter_func, FALLING);
-  attachInterrupt(ACTIVE_PIN, Active, FALLING); //버튼 누를 시 Active 카운트가 늘어남 0, 1, 2에 모드 할당 후 구분
+  attachInterrupt(BUTTON_UP, upButtonF, FALLING);
+  attachInterrupt(BUTTON_DOWN, downButtonF, FALLING);
+  attachInterrupt(ACTIVE_PIN, bootButtonF, FALLING); //
 
   /*------PWM설정부------*/
   pinMode(PWM_PIN, OUTPUT); // PWM 핀 설정
-  ledcSetup(PWM_CHANNEL, PWM_FREQ, PWM_RESOLUTION); // PWM 설정
-  ledcAttachPin(PWM_PIN, PWM_CHANNEL); // PWM 핀과 채널 연결
+  //ledcSetup(PWM_CHANNEL, PWM_FREQ, PWM_RESOLUTION); // PWM 설정
+  //ledcAttachPin(PWM_PIN, PWM_CHANNEL); // PWM 핀과 채널 연결
   
   ledcWrite(PWM_CHANNEL, pwmValue); // 초기 PWM 값 설정
 }
@@ -149,15 +145,21 @@ void setup()
 /*------loop-------*/
 void loop()
 { 
-  
-  /*-----온도 측정부-----*/
-  if(sensors.isConversionComplete()){
-    float temperatureC = sensors.getTempCByIndex(0); // 측정온도 저장
-    sensors.requestTemperatures(); // 다음 측정을 위해 온도 요청
-  }
 
+  /*----------동작 모드 설정부----------*/
+  /*-----loop 지역 변수 선언부-----*/
+  static float lastTemperature = 0; // 마지막 온도 저장 변수
+  temperatureC = 50;
+  volatile static float setTemperature = userSetTemperature;
+  volatile static char lastmode = STOP_MODE; // 마지막 모드 저장 변수
+
+  /*-----온도 측정부-----*/
+  /*if(sensors.isConversionComplete()){
+    temperatureC = sensors.getTempCByIndex(0); // 측정온도 저장
+    sensors.requestTemperatures(); // 다음 측정을 위해 온도 요청
+  }*/
   /*-----온도 센서 오류 발생 시 오류 메세지 출력-----*/
-  if (temperatureC == DEVICE_DISCONNECTED_C)
+  /*if (temperatureC == DEVICE_DISCONNECTED_C)
   {
     Serial.println("Error: Sensor not found!");
     display.clearDisplay();
@@ -167,104 +169,65 @@ void loop()
     display.display();
     delay(1000); // 1초 대기 후 다시 시도
     return;      // 에러 발생 시 루프 종료
-  }
+  }*/
 
-  /*----------동작 모드 설정부----------*/
-  /*
-  동작모드 설정 목표
-  - 유지 모드 : 설정온도와 현재온도가 같을 때, 가열/냉각 모드 모두 OFF
-  - 가열 모드 : 설정온도가 현재온도보다 높을 때, 가열 모드 ON, 냉각 모드 OFF
-  - 냉각 모드 : 설정온도가 현재온도보다 낮을 때, 가열 모드 OFF, 냉각 모드 ON
-  버튼 하나로 유지 ; 가열 냉각 ; 종료 설정 가능 -> 0, 1, 2로 설정 0 : 정지, 1 : 가열 or 냉각, 2 : 유지
-  - 버튼을 눌렀을 때, 설정온도 상승/하강, 모드 변경 가능
-  - 가열, 냉각 모드했을 때 이를 스스로 냉각과 가열을 구분
-  - 유지모드시 온도 유지지
-  - 설정온도는 15도에서 85도까지 설정 가능
-  - 설정온도는 1도 단위로 설정 가능
-  - 모드 oled에 표시
-  - 설정온도 oled에 표시
-  - 현재온도 oled에 표시
-  - 버튼 기능 구현
-  - 버튼1 : 설정온도 상승
-  - 버튼2 : 설정온도 하강
-  - 버튼3 : 모드 변경 (정지, 가열/냉각, 유지)
-  - 버튼4 : 활성화 (가열/냉각 모드에 따라 설정)
-  */
- /*-----시스템 개요-----*/
- /*
-  - 시스템은 DS18B20 온도 센서를 사용하여 현재 온도를 측정하고, 설정된 온도에 따라 가열 또는 냉각 모드를 자동으로 전환합니다.
-  - 사용자는 OLED 디스플레이를 통해 현재 온도와 설정 온도를 확인할 수 있으며, 버튼을 통해 설정 온도를 조절할 수 있습니다.
-  - 시스템은 정지 모드, 활성화 모드, 유지 모드로 작동하며, 각 모드에 따라 PWM 신호를 조절하여 열전소자를 제어합니다.
-  - 정지 모드에서는 PWM 신호가 0으로 설정되어 열전소자가 작동하지 않으며, 활성화 모드에서는 현재 온도에 따라 PWM 신호가 조절되어 가열 또는 냉각이 이루어집니다.
-  - 유지 모드에서는 설정 온도와 현재 온도가 같을 때 PWM 신호가 0으로 설정되어 열전소자가 작동하지 않으며, 설정 온도와 현재 온도가 다를 때는 가열 또는 냉각 모드로 전환되어 PWM 신호가 조절됩니다.
-  - 사용자는 버튼을 눌러 설정 온도를 조절할 수 있으며, 설정 온도는 15도에서 85도까지 1도 단위로 조절 가능합니다.
-  - 3번 버튼을 누르면 시스템 설정 변경 모드로 들어가며 이때 사용자는 원하는 모드를 4번 버튼을 눌러 선택할 수 있습니다. 이는 정지 모드, 활성화 모드, 유지 모드로 나뉘며 각 모드는 순서대로 display를 통해 사용자에게 표시됩니다.
-  - 활성화 모드에 들어가면 사용자는 1번 버튼과 2번 버튼을 통해 설정 온도를 조절할 수 있으며, 설정 온도에 따라 가열 또는 냉각 모드로 전환됩니다.
-  - 설정 온도는 OLED 디스플레이에 표시되며, 현재 온도와 함께 확인할 수 있습니다.
-  - 활성화 모드에서 설정을 마치면 4번 버튼을 눌러 시스템을 활성화할 수 있으며, 이때 가열 또는 냉각 모드로 전환됩니다.
-  - 시스템은 설정 온도와 현재 온도를 비교하여 가열 또는 냉각 모드를 자동으로 전환하며, 이를 통해 사용자는 원하는 온도를 유지할 수 있습니다.
-  - 시스템은 사용자가 설정한 온도에 도달하면 PWM 신호를 0으로 설정하여 열전소자가 작동하지 않도록 합니다.
-  - 실행 시 모드를 선택할 수 있도록 합니다.
- */
-
-  /*-----------PWM 설정부 / 동작----------*/
-  static float lastTemperature = 0; // 마지막 온도 저장 변수
 
   /*-----User Mode Setting I/O-----*/
   if(control_mode == STOP_MODE) // 정지 모드일 때
   { 
-    while (control_mode != STOP_MODE)
+    user_enter = false; // 사용자 모드 설정 초기화
+    mainDisplayPrint();
+    display.display(); // display 출력
+    if (upButton == true) 
     {
-      if(user_control_mode == STOP_MODE) {
-        mainDisplayPrint();
-        delay(1000); // 1초 대기
-        display.clearDisplay(); // display 초기화
-        DisplayPrintNStop();
-        delay(1000); // 1초 대기
-        display.clearDisplay(); // display 초기화
-      }
-      else if(user_control_mode == ACTIVE_MODE) {
-        mainDisplayPrint();
-        delay(1000); // 1초 대기
-        display.clearDisplay(); // display 초기화
-        DisplayPrintNActive();
-        delay(1000); // 1초 대기
-        display.clearDisplay(); // display 초기화
-      }
-      else if(user_control_mode == KEEP_TEMPERATURE_MODE) {
-        mainDisplayPrint();
-        delay(1000); // 1초 대기
-        display.clearDisplay(); // display 초기화
-        DisplayPrintNKeep();
-        delay(1000); // 1초 대기
-        display.clearDisplay(); // display 초기화
-      }
+    user_control_mode += 1; // upButton이 눌리면 모드 증가
+      if (user_control_mode > 2) 
+        user_control_mode = 0; // 상태 초기화
+      Serial.println("change mode");
+      upButton = false; // upButton 초기화
     }
+    if(downButton == true) 
+    { // downButton이 눌리면 모드 변경
+      if (user_control_mode > 0) 
+        user_control_mode -= 1; // downButton이 눌리면 모드 감소
+      if (user_control_mode == 0)
+        user_control_mode = 2; // 상태 초기화
+      Serial.println("change mode");
+      downButton = false; // downButton 초기화
+    }
+    if (bootButton == true) 
+    { // bootButton이 눌리면 모드 변경
+      control_mode = user_control_mode; // 모드 변경
+    }
+    lastmode = STOP_MODE;
   }
 
-  //STOP_MODE 동작
-  if (control_mode == STOP_MODE) // 정지 모드일 때
-  {
-    changeControlMode(STOP_MODE); // 정지 모드로 변경
-    pwmValue = 0; // PWM 값 0으로 설정
-    ledcWrite(PWM_CHANNEL, pwmValue); // PWM 값 출력
-    display.clearDisplay();
-  }
+   /*-----------PWM 설정부 / 동작----------*/
   //ACTIVE_MODE 동작
   if (control_mode == ACTIVE_MODE) { 
     pwmValue = map(temperatureC, lastTemperature, setTemperature, 0, 255); // 온도에 따라 PWM 값 설정
-    if (temperatureC > setTemperature) // 현재 온도가 설정 온도보다 높을 때
+    if (bootButton == true) { // bootButton이 눌리면 모드 변경
+      setTemperature = userSetTemperature; // 실행
+      bootButton = false; // bootButton 초기화
+    }
+    if (temperatureC < setTemperature) // 현재 온도가 설정 온도보다 낮을 때
     {
       pwmValue = map(temperatureC, SYSTEM_MIN_TEMPERATURE, SYSTEM_MAX_TEMPERATURE, 0, 255); // PWM 값 설정
       changeControlMode(HEATER_MODE); // 가열 모드로 변경
-      ledcWrite(PWM_CHANNEL, pwmValue); // PWM 값 출력
+      //ledcWrite(PWM_CHANNEL, pwmValue); // PWM 값 출력
+      displayPrint("Heating");
+      displayPrint("Heating.");
+      displayPrint("Heating..");
       displayPrint("Heating...");
     }
-    else if (temperatureC < setTemperature) // 현재 온도가 설정 온도보다 낮을 때
+    else if (temperatureC > setTemperature) // 현재 온도가 설정 온도보다 높을 때
     {
       pwmValue = map(SYSTEM_MAX_TEMPERATURE - temperatureC, SYSTEM_MIN_TEMPERATURE, SYSTEM_MAX_TEMPERATURE, 0, 255); // PWM 값 설정
       changeControlMode(COOLER_MODE); // 냉각 모드로 변경
-      ledcWrite(PWM_CHANNEL, pwmValue); // PWM 값 출력
+      //ledcWrite(PWM_CHANNEL, pwmValue); // PWM 값 출력
+      displayPrint("Cooling");
+      displayPrint("Cooling.");
+      displayPrint("Cooling..");
       displayPrint("Cooling...");
     }
     else if(temperatureC == setTemperature) // 현재 온도가 설정 온도와 같을 때
@@ -272,31 +235,73 @@ void loop()
       pwmValue = 0; // PWM 값 0으로 설정
       control_mode = KEEP_TEMPERATURE_MODE; // 유지 모드로 변경
       lastTemperature = temperatureC; // 마지막 온도 업데이트
-      ledcWrite(PWM_CHANNEL, pwmValue); // PWM 값 출력
+      //ledcWrite(PWM_CHANNEL, pwmValue); // PWM 값 출력
     }
+    //버튼 작동 부분  
+    if(upButton == true) // 설정온도 상승 버튼이 눌리면
+    {
+      userSetTemperature += 1; // 설정온도 상승
+      if(userSetTemperature > MAX_TEMPERATURE) // 최대 온도 초과 시
+        userSetTemperature = MAX_TEMPERATURE; // 최대 온도로 설정
+      upButton = false; // 버튼 초기화
+    }
+    if(downButton == true) // 설정온도 하강 버튼이 눌리면
+    {
+      userSetTemperature -= 1; // 설정온도 하강
+      if(userSetTemperature < MIN_TEMPERATURE) // 최소 온도 초과 시
+        userSetTemperature = MIN_TEMPERATURE; // 최소 온도로 설정
+      downButton = false; // 버튼 초기화
+    }
+    lastmode = ACTIVE_MODE; // 마지막 모드 업데이트
   }
+
   //KEEP_TEMPERATURE_MODE 동작
   if (control_mode == KEEP_TEMPERATURE_MODE) { // 유지 모드일 때
-    if (temperatureC > setTemperature) // 현재 온도가 설정 온도보다 높을 때
+    setTemperature = temperatureC;
+    if (temperatureC > setTemperature) // 현재 온도가 설정 온도보다 낮을 때  
     {
-      pwmValue = map(lastTemperature, SYSTEM_MIN_TEMPERATURE, SYSTEM_MAX_TEMPERATURE, 0, 255); // PWM 값 설정
+      if (lastTemperature-3 > temperatureC)
+      {
+      pwmValue = map(lastTemperature, SYSTEM_MIN_TEMPERATURE, SYSTEM_MAX_TEMPERATURE, 0, 128); // PWM 값 설정
       changeControlMode(HEATER_MODE); // 가열 모드로 변경
-      ledcWrite(PWM_CHANNEL, pwmValue); // PWM 값 출력
+      //ledcWrite(PWM_CHANNEL, pwmValue); // PWM 값 출력
+      }
     }
-    else if (temperatureC < setTemperature) // 현재 온도가 설정 온도보다 낮을 때
+    else if (temperatureC < setTemperature) // 현재 온도가 설정 온도보다 높을 때
     {
-      pwmValue = map(SYSTEM_MAX_TEMPERATURE - lastTemperature, SYSTEM_MIN_TEMPERATURE, SYSTEM_MAX_TEMPERATURE, 0, 255); // PWM 값 설정
-      changeControlMode(COOLER_MODE); // 냉각 모드로 변경
-      ledcWrite(PWM_CHANNEL, pwmValue); // PWM 값 출력
+      if (lastTemperature+3 < temperatureC) // 마지막 온도와 현재 온도가 같을 때
+      {
+        pwmValue = map(SYSTEM_MAX_TEMPERATURE - lastTemperature, SYSTEM_MIN_TEMPERATURE, SYSTEM_MAX_TEMPERATURE, 0, 128); // PWM 값 설정
+        changeControlMode(COOLER_MODE); // 냉각 모드로 변경
+      //ledcWrite(PWM_CHANNEL, pwmValue); // PWM 값 출력
+      }
     }
     else if(temperatureC == setTemperature) // 현재 온도가 설정 온도와 같을 때
     {
       pwmValue = 0; // PWM 값 0으로 설정
-      ledcWrite(PWM_CHANNEL, pwmValue); // PWM 값 출력
+      //ledcWrite(PWM_CHANNEL, pwmValue); // PWM 값 출력
     }
-    displayPrint("Keeping temp...");
+    if(upButton == true) // 설정온도 상승 버튼이 눌리면
+    {
+      userSetTemperature += 1; // 설정온도 상승
+      if(userSetTemperature > MAX_TEMPERATURE) // 최대 온도 초과 시
+        userSetTemperature = MAX_TEMPERATURE; // 최대 온도로 설정
+      upButton = false; // 버튼 초기화
+    }
+    if(downButton == true) // 설정온도 하강 버튼이 눌리면
+    {
+      userSetTemperature -= 1; // 설정온도 하강
+      if(userSetTemperature < MIN_TEMPERATURE) // 최소 온도 초과 시
+        userSetTemperature = MIN_TEMPERATURE; // 최소 온도로 설정
+      downButton = false; // 버튼 초기화
+    }
+    if (bootButton == true) { // bootButton이 눌리면 모드 변경
+      setTemperature = userSetTemperature; // 모드 변경
+      control_mode = ACTIVE_MODE;
+      bootButton = false; // bootButton 초기화
+    }
+    lastmode = KEEP_TEMPERATURE_MODE; // 마지막 모드 업데이트
   }
-
   delay(100); // 100ms 대기
 }
 /*-----loop 종료-----*/
@@ -305,14 +310,18 @@ void loop()
 void displayPrint(const char *text)
 {
   display.clearDisplay();
-  display.setTextSize(2);
+  display.setTextSize(1);
   display.setCursor(0, 0);
   display.println(text);
-  display.setTextSize(1);
+  //
+  display.setTextSize(0.5);
   display.setCursor(0, 20);
-  display.print("Temperature: ");
-  display.print(setTemperature);
-  display.print(" C / ");
+  display.println("setTemperature: ");
+  display.setCursor(30, 30);
+  display.print(userSetTemperature);
+  display.println(" C ");
+  display.println("Temperature: ");
+  display.setCursor(30, 50);
   display.print(temperatureC);
   display.println(" C");
   display.display();
@@ -326,146 +335,61 @@ void mainDisplayPrint()
   display.setCursor(0, 0); // 커서 위치 설정
   display.println("Set Mode");
   display.setTextSize(1); // 텍스트 크기 설정
-  display.setCursor(0, 20); // 커서 위치 설정
-  display.println("1. EXIT ");
-  display.println("2. ACTIVE ");
-  display.println("3. KEEP Temperature ");
-  display.setCursor(0, 40); // 커서 위치 설정
+  display.setCursor(0, 25); // 커서 위치 설정
+  if(user_control_mode == STOP_MODE) {
+    display.write("STOP_MODE");
+  }
+  else if(user_control_mode == ACTIVE_MODE) {
+    display.write("ACTIVE_MODE");
+  }
+  else if(user_control_mode == KEEP_TEMPERATURE_MODE) {
+    display.write("KEEP_MODE");
+  }
+  display.setCursor(0, 50); // 커서 위치 설정
   display.print(temperatureC);
   display.print(" C ");
 }
 
-void DisplayPrintNStop()
-{
-  display.clearDisplay(); // display 초기화
-  display.setTextSize(2); // 텍스트 크기 설정
-  display.setCursor(0, 0); // 커서 위치 설정
-  display.println("Set Mode");
-  display.setTextSize(1); // 텍스트 크기 설정
-  display.setCursor(0, 20); // 커서 위치 설정
-  display.println(" ");
-  display.println("2. ACTIVE ");
-  display.println("3. KEEP Temperature ");
-  display.setCursor(0, 40); // 커서 위치 설정
-  display.print(temperatureC);
-  display.print(" C ");
-}
-
-void DisplayPrintNActive()
-{
-  display.clearDisplay(); // display 초기화
-  display.setTextSize(2); // 텍스트 크기 설정
-  display.setCursor(0, 0); // 커서 위치 설정
-  display.println("Set Mode");
-  display.setTextSize(1); // 텍스트 크기 설정
-  display.setCursor(0, 20); // 커서 위치 설정
-  display.println("1. EXIT ");
-  display.println(" ");
-  display.println("3. KEEP Temperature ");
-  display.setCursor(0, 40); // 커서 위치 설정
-  display.print(temperatureC);
-  display.print(" C ");
-}
-
-void DisplayPrintNKeep()
-{
-  display.clearDisplay(); // display 초기화
-  display.setTextSize(2); // 텍스트 크기 설정
-  display.setCursor(0, 0); // 커서 위치 설정
-  display.println("Set Mode");
-  display.setTextSize(1); // 텍스트 크기 설정
-  display.setCursor(0, 20); // 커서 위치 설정
-  display.println("1. EXIT ");
-  display.println("2. ACTIVE ");
-  display.println(" ");
-  display.setCursor(0, 40); // 커서 위치 설정
-  display.print(temperatureC);
-  display.print(" C ");
-}
+/*-----바운싱으로 인한 입력 값 오류 제거용-----*/
+volatile unsigned long lastDebounceTimeUp = 0;   // BUTTON_UP 디바운싱 시간
+volatile unsigned long lastDebounceTimeDown = 0; // BUTTON_DOWN 디바운싱 시간
+volatile unsigned long lastDebounceTimeMode = 0; // BUTTON_MODE 디바운싱 시간
+volatile unsigned long lastActiveTime = 0;       // ACTIVE_PIN 디바운싱 시간
+const unsigned long debounceDelay = 500;          // 디바운싱 지연 시간 (밀리초)
 
 /*-----Interrupt 함수 정의 부분-----*/
+//-> 추후 인터럽트 감지 / 실행부 함수로 분리할 필요 있음  
 // 값을 감소시키는 버튼
-void IRAM_ATTR Button_down() //
+void IRAM_ATTR downButtonF() //
 { 
   unsigned long currentTime = millis();
   if (currentTime - lastDebounceTimeDown > debounceDelay)
   {
     lastDebounceTimeDown = currentTime;
-    if (control_mode == STOP_MODE) {
-      user_control_mode -= 1;
-      if (user_control_mode < 0) {
-        user_control_mode = 2; // 상태 초기화
-      } 
-    }
-    else if (control_mode == ACTIVE_MODE) {
-      if (setTemperature > MIN_TEMPERATURE)
-      {
-        setTemperature -= 1;
-        Serial.println("temperature down");
-      }
-    }
+    downButton = true; // 설정온도 하강 버튼 상태 변수
   }
 }
 // 값을 증가시키는 버튼
-void IRAM_ATTR Button_up()
+void IRAM_ATTR upButtonF()
 {
   unsigned long currentTime = millis();
   if (currentTime - lastDebounceTimeUp > debounceDelay)
   {
     lastDebounceTimeUp = currentTime;
-    if (control_mode == STOP_MODE) {
-      user_control_mode += 1;
-      if (user_control_mode > 2) {
-        user_control_mode = 0; // 상태 초기화
-      } 
-    }
-    else if (control_mode == ACTIVE_MODE) {
-      if (setTemperature < MAX_TEMPERATURE)
-      {
-        setTemperature += 1;
-        Serial.println("temperature up");
-      }
-    }
+    upButton = true; // 설정온도 상승 버튼 상태 변수
   }
 }
 
-void IRAM_ATTR Active()
+void IRAM_ATTR bootButtonF()
 {
   unsigned long currentTime = millis();
   if (currentTime - lastActiveTime > debounceDelay)
   {
     lastDebounceTimeUp = currentTime;
-    activecontrol += 1; // 활성화 핀 상태 반전
-    if (activecontrol > 2)
-    {
-      activecontrol = 0; // 상태 초기화
-    }
-    if(activecontrol == 0)
-    {
-      control_mode = STOP_MODE; // 정지 모드
-    }
-    else if(activecontrol == 1)
-    {
-      control_mode = ACTIVE_MODE; // 활성화 모드
-    }
-    else if(activecontrol == 2)
-    {
-      control_mode = KEEP_TEMPERATURE_MODE; // 유지 모드
-    }
+    bootButton = true;
   }
 }
 
-void IRAM_ATTR Enter_func()
-{
-  unsigned long currentTime = millis();
-  if (currentTime - lastDebounceTimeMode > debounceDelay)
-  {
-    lastDebounceTimeMode = currentTime;
-    if (control_mode == STOP_MODE) {
-      control_mode = user_control_mode;
-    }
-  }
-}
 
 /*------모드 변경 함수------*/
 void changeControlMode(char control_device_mode)
