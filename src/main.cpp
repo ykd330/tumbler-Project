@@ -8,10 +8,7 @@
 
 /*----------전역변수 / 클래스 선언부----------*/
 /*-----Display Setting-----*/
-#define SCREEN_WIDTH 128         // display 가로
-#define SCREEN_HEIGHT 64         // display 세로
 #define OLED_RESET -1            // reset pin
-#define SSD1306_I2C_ADDRESS 0x3C // I2C 주소
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, OLED_RESET, OLED_RESET); // I2C 핀 설정
 
 /*-----Temperature Sensor Setting-----*/
@@ -81,10 +78,26 @@ float displaySleepTime = 0; // display 절전모드 시간 변수
 
 /*----------함수 선언부----------*/
 /*------Display / Display Print 제어 함수 설정부------*/
+/*-----Starting Display Print-----*/
+void startingDisplayPrint()
+{
+  u8g2.setFont(u8g2_font_ncenB08_tr); // 폰트 설정
+  u8g2.setCursor(0, 0); // 커서 위치 설정
+  u8g2.print("Smart Tumbler System"); // Starting... 출력
+  u8g2.setFontDirection(2); // 폰트 방향 설정
+  u8g2.setDrawColor(1);
+  u8g2.print("Battery");
+  u8g2.setFontDirection(0); // 폰트 방향 설정
+  u8g2.setDrawColor(0); // 글자 색상 설정
+  u8g2.setCursor(0, u8g2.getBufferTileHeight() + 5); // 커서 위치 설정
+  u8g2.drawHLine(0, u8g2.getCursorY(), u8g2.getBufferTileWidth()); // 가로선 그리기
+  u8g2.sendBuffer(); // 버퍼 전송
+  delay(1000); // 1초 대기
+}
 /*-----Main Display Print-----*/
 void mainDisplayPrint() //Main Display출력 함수
 {
-  
+
 }
 
 /*-----Smooth Display-----*/
@@ -211,54 +224,66 @@ void changeControlMode(char control_device_mode) //열전소자 제어 함수
 
 /*---Display Structure---*/
 /* UI 만드는 사람들 ㄹㅇ 존경스럽다
-starting Display :
+---starting Display--- 
 |Smart Tumbler System      [Batery : 100%]|
 |-----------------------------------------|
 |제작 : 5조 임선진 안대현 유경도            |
-|작품명 : Smart Tumbler System            |
-|----------------------------------------|
+|작품명 : Smart Tumbler                   |
+|Starting...                             |
 
-basic Display :
+---Setting Temperature Display---
 |Smart Tumbler System      [Batery : 100%]|
 |-----------------------------------------|
-|현재 온도 : XX.X C                        |
-|설정 온도 : XX.X C                        |
+|          목표 온도 : XX.X℃             |
+|       온도증가 : ▲  온도감소 : ▼         |
+| 완료하고 싶으시면 전원 버튼을 눌러주세요.  |
+
+Ended Setting Display :
+|Smart Tumbler System      [Batery : 100%]|
+|-----------------------------------------|
+|목표 온도를 XX.X℃로 설정 완료 했어요!      |
+|온도를 조절하는 동안 기다려주세요.         |
+|※온도 조절 중 화상에 주의하세요!          |
+
+---Charging / low Battery Display---
+Charging Display :
+|Smart Tumbler System     [Batery : △15%]|
+|-----------------------------------------|
+|현재 온도 : XX.X℃                        |
+|설정 온도 : XX.X℃                        |
+|[상태 표시]                               |
+
+low-battery Display :
+|Smart Tumbler System       [Batery : 15%]|
+|-----------------------------------------|
+|현재 온도 : XX.X℃                        |
+|설정 온도 : XX.X℃                        |
+|충전이 필요합니다!                        |
+
+---basic Display---
+standby Display :
+|Smart Tumbler System      [Batery : 100%]|
+|-----------------------------------------|
+|현재 온도 : XX.X℃                        |
+|설정 온도 : XX.X℃                        |
 |대기중...(..개수 변화)                    |
 
 active Display :
 |Smart Tumbler System      [Batery : 100%]|
 |-----------------------------------------|
-|현재 온도 : XX.X C (가열 / 냉각 중)        |
-|목표 온도 : XX.X C                        |
+|현재 온도 : XX.X℃ (가열 / 냉각 중)        |
+|목표 온도 : XX.X℃                        |
 |온도 조절중...                            |
 
 temperature maintanence Display :
 |Smart Tumbler System      [Batery : 100%]|
 |-----------------------------------------|
-|현재 온도 : XX.X C (설정 온도 : )         |
+|현재 온도 : XX.X℃ (설정 온도 : )         |
 |가열 / 냉각 상태                          |
 |온도 유지중...                           |
-
-Setting Temperature Display :
-|Smart Tumbler System      [Batery : 100%]|
-|-----------------------------------------|
-|          목표 온도 : XX.X C             |
-|       온도증가 : ▲ / 온도감소 : ▼        |
-|완료하고 싶으시면 전원 버튼을 눌러주세요.   |
-
-Ended Setting Display :
-|Smart Tumbler System      [Batery : 100%]|
-|-----------------------------------------|
-|목표 온도 : XX.X C로 설정 완료 했어요!     |
-|온도를 조절하는 동안 기다려주세요.         |
-|※온도 조절 중 화상에 주의하세요!          |
-|-----------------------------------------|
-
-
 */
-
-
 /*----------시스템 구상----------*/
+
 
 /*----------setup----------*/
 void setup()
@@ -311,13 +336,7 @@ void loop()
 { 
   /*------Starting DisplayPrint------*/
   if(millis() < 3000) {
-    u8g2.setPowerSave(0); // 절전모드 해제
-    u8g2.setFont(u8g2_font_ncenB12_tr); // 폰트 설정
-    u8g2.clearBuffer(); // 버퍼 초기화
-    u8g2.setCursor(0, 10); // 커서 위치 설정
-    u8g2.println("5조 : 임선진 안대현 유경도"); // 시작 메시지 출력
-    u8g2.println("작품명 : Samrt Tumbler"); // 작품명 출력작
-    u8g2.print("2025년 졸업작품작");
+    startingDisplayPrint();
     contrastUpDisplay();
     delay(1000); // 100ms 대기
     contrastDownDisplay();
