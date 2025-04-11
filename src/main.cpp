@@ -1,58 +1,37 @@
-/*-------include-------*/
+/*-----------include-----------*/
 #include <Arduino.h>
 #include <Wire.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
+#include <U8g2lib.h>
+/*-----------include-----------*/
 
-/*------소자 설정------*/
-
+/*----------전역변수 / 클래스 선언부----------*/
 /*-----Display Setting-----*/
-// OLED display 설정
-//디스플레이 구현 시 고려할 점
-  // 부드러운 전환을 위해 0.5초 간격으로 화면을 업데이트
-  // 화면 전환 시 이전 화면을 지우고 새로운 화면을 그리는 방식으로 구현
-  // 모드당 화면을 나눔 ; 온도 측정 시 화면에 표현
-  // 1. 온도 체크 알림 화면
-  // 2. 정지 화면 - 메인 화면임 
-  // 3. 작동 중 화면 - 현재 온도 / 설정온도 표시 ; 1초 간격으로 업데이트 ; 가열 / 냉각 모드 표시
-  // 4. 온도 유지 화면 - 설정 온도를 표시 / "{설정 온도}'C 유지중..." ; 1초 간격으로 업데이트 
-  // 배터리 잔량 표시 - 가능시 추가
-  // 온도 변환 시 전용 화면으로 전환 ; 전환 트리거 : 전원 버튼, 트리거 발생 시 화면 전환 후 버튼으로 
-  // 온도 설정, 전원버튼 한번 더 누를 시 설정 온도에 따라 모드 변환;
 #define SCREEN_WIDTH 128         // display 가로
 #define SCREEN_HEIGHT 64         // display 세로
 #define OLED_RESET -1            // reset pin
 #define SSD1306_I2C_ADDRESS 0x3C // I2C 주소
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-//OLED display 함수
-void mainDisplayPrint(); // display 함수 선언부
-void displayPrint(const char *text);
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, OLED_RESET, OLED_RESET); // I2C 핀 설정
 
 /*-----Temperature Sensor Setting-----*/
-// DS18B20 온도 감지 센서 설정
 #define ONE_WIRE_BUS 4 // DS18B20 센서의 데이터 핀을 GPIO 4번에 연결
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
 static float temperatureC = 0; // 현재 온도 저장 변수
-// SYSTEM 기본 온도 설정
 float userSetTemperature = 30;
 
-/*-----작동 모드-----*/
-//시스템 작동 모드 설정
+/*-----시스템 관리 / 제어용-----*/
+//GPIO아님
 #define STOP_MODE 0 // 정지 모드
 #define ACTIVE_MODE 1 // 활성화 모드
 #define KEEP_TEMPERATURE_MODE 2 // 유지 모드
 
-//열전소자 작동 모드 설정 
 #define HEATER_MODE 3 // 가열 모드
 #define COOLER_MODE 4 // 냉각 모드
 char control_mode = STOP_MODE; // 초기 모드 설정
 
-
-/*------ESP32 / GPIO Pin / 변수 / 함수 / 설정부------*/
-
+/*-----GPIO 설정 부-----*/
 /*---ESP32-C3 SuperMini GPIO 핀 구성---*/
 // GPIO 5 : A5 : MISO /   5V   :    : VCC
 // GPIO 6 :    : MOSI /  GND   :    : GND
@@ -62,85 +41,123 @@ char control_mode = STOP_MODE; // 초기 모드 설정
 // GPIO 10:    :      / GPIO 2 : A2 : 
 // GPIO 20:    : RX   / GPIO 1 : A1 : 
 // GPIO 21:    : TX   / GPIO 0 : A0 : 
-/*-----Button 설정 부-----*/
+//PWM, 통신 관련 핀은 임의로 설정 가능함
+
+/*-----열전소자 전류 제어용 PWM / 출력 PIN 설정부-----*/
+#define PWM_FREQ 5000 // PWM 주파수 설정 (5kHz)
+#define PWM_RESOLUTION 8 // PWM 해상도 설정 (8비트)
+#define PWM_CHANNEL 0 // PWM 채널 설정 (0번 채널 사용)
+#define PWM_PIN 1 // PWM 핀 설정 (GPIO 1번 사용)
+#define COOLER_PIN 2 // 냉각 제어
+#define HEATER_PIN 3 // 가열 제어
+
+/*-----Push Button 설정부-----*/
 #define BUTTON_UP 5   // GPIO 5번에 연결, 설정온도 상승
 #define BUTTON_DOWN 6 // GPIO 6번에 연결, 설정온도 하강
 #define BUTTON_BOOT 7 // GPIO 7번에 연결, 모드 변경 버튼
-volatile static char lastControlMode = STOP_MODE; // 마지막부 모드 저장 변수
-volatile static char user_control_mode = STOP_MODE; // 사용자 선택 모드 저장 변수 / 기본 : 정지 모드
-volatile static char user_enter = false; // 사용자 선택 모드 저장 변수 / 기본 : 정지 모드
-volatile static char keep_stop = false; // 사용자 모드 저장 변수 / 기본 : 정지 모드
-
-// 열전소자 모드 제어
-#define HEATER_PIN 3 // 가열 모드
-#define COOLER_PIN 2 // 냉각 모드
-#define ACTIVE_PIN 1 // 활성화 핀 (가열/냉각 모드에 따라 설정)수
-
-
+float pwmValue = 0; // PWM 출력 값 저장 변수
 
 /*-----시스템 한계 온도 설정-----*/
 #define MAX_TEMPERATURE 125 // 최대 온도 125'C
 #define MIN_TEMPERATURE -55 // 최소 온도 -55'C
-#define SYSTEM_MIN_TEMPERATURE 15 // 시스템 최소 온도 15'C
-#define SYSTEM_MAX_TEMPERATURE 85 // 시스템 최대 온도 85'C
+#define SYSTEM_MIN_TEMPERATURE 5 // 시스템 최소 온도 5'C
+#define SYSTEM_MAX_TEMPERATURE 80 // 시스템 최대 온도 80'C
 
-//PWM 설정
-#define PWM_FREQ 5000 // PWM 주파수 설정 (5kHz)
-#define PWM_RESOLUTION 8 // PWM 해상도 설정 (8비트)
-#define PWM_CHANNEL 0 // PWM 채널 설정 (0번 채널 사용)
-#define PWM_PIN 2 // PWM 핀 설정 (GPIO 2번 사용)
-float pwmValue = 0;
-
-/*------Interrupt 버튼 함수 선언부------*/
-/*-----Interrupt 버튼 변수 선언부-----*/
+/*-----Interrupt 버튼 triger 선언부-----*/
 unsigned char bootButton = false;
 unsigned char upButton = false; // 설정온도 상승 버튼 상태 변수
 unsigned char downButton = false; // 설정온도 하강 버튼 상태 변수
 
 /*-----바운싱으로 인한 입력 값 오류 제거용-----*/
-volatile unsigned long lastDebounceTimeUp = 0;   // BUTTON_UP 디바운싱 시간
-volatile unsigned long lastDebounceTimeDown = 0; // BUTTON_DOWN 디바운싱 시간
-volatile unsigned long lastDebounceTimeMode = 0; // BUTTON_MODE 디바운싱 시간
-volatile unsigned long lastActiveTime = 0;       // ACTIVE_PIN 디바운싱 시간
+volatile unsigned long lastDebounceTime = 0;   // 마지막 디바운스 시간
 const unsigned long debounceDelay = 500;          // 디바운싱 지연 시간 (밀리초)
 
-/*-----Interrupt 함수 정의 부분-----*/
+/*-----Display 절전모드 제어용 변수-----*/
+unsigned char displaySleep = false; // display 절전모드 상태 변수
+float displaySleepTime = 0; // display 절전모드 시간 변수
+/*----------전역변수 / 클래스 선언부----------*/
+
+
+
+/*----------함수 선언부----------*/
+/*------Display / Display Print 제어 함수 설정부------*/
+/*-----Main Display Print-----*/
+void mainDisplayPrint() //Main Display출력 함수
+{
+  
+}
+
+/*-----Smooth Display-----*/
+void contrastUpDisplay()// 대비 조정 함수 UP
+{
+  for (int i = 0; i < 255; i++)
+  {
+    u8g2.setContrast(i); // 대비 조정
+    u8g2.sendBuffer();   // 버퍼 전송
+    delay(10);           // 5ms 대기
+  }
+}
+void contrastDownDisplay()// 대비 조정 함수 DOWN
+{
+  for (int i = 255; i >= 0; i--)
+  {
+    u8g2.setContrast(i); // 대비 조정
+    u8g2.sendBuffer();   // 버퍼 전송
+    delay(10);           // 5ms 대기
+  }
+}
+
+/*-----Display 기본 출력 함수-----*/
+void displayPrint(const char *text)// display 출력 함수
+{
+  u8g2.clearDisplay();
+  u8g2.setCursor(0, 0);
+  u8g2.println(text);
+  u8g2.setCursor(0, 20);
+  u8g2.println("setTemperature: ");
+  u8g2.setCursor(30, 30);
+  u8g2.print(userSetTemperature);
+  u8g2.println(" C ");
+  u8g2.println("Temperature: ");
+  u8g2.setCursor(30, 50);
+  u8g2.print(temperatureC);
+  u8g2.println(" C");
+  u8g2.display();
+}
+
+/*------Interrupt 함수 정의 부분------*/
 void IRAM_ATTR downButtonF() //Down Button Interrupt Service Routine
 { 
   unsigned long currentTime = millis();
-  if (currentTime - lastDebounceTimeDown > debounceDelay)
+  if (currentTime - lastDebounceTime > debounceDelay)
   {
-    lastDebounceTimeDown = currentTime;
+    lastDebounceTime = currentTime;
     downButton = true; // 설정온도 하강 버튼 상태 변수
+    displaySleepTime = millis(); // display 절전모드 시간 초기화
   }
 }
 void IRAM_ATTR upButtonF() //Up Button Interrupt Service Routine
 {
   unsigned long currentTime = millis();
-  if (currentTime - lastDebounceTimeUp > debounceDelay)
+  if (currentTime - lastDebounceTime> debounceDelay)
   {
-    lastDebounceTimeUp = currentTime;
+    lastDebounceTime = currentTime;
     upButton = true; // 설정온도 상승 버튼 상태 변수
+    displaySleepTime = millis(); // display 절전모드 시간 초기화
   }
 }
 void IRAM_ATTR bootButtonF() //Boot Button Interrupt Service Routine
 {
   unsigned long currentTime = millis();
-  if (currentTime - lastDebounceTimeMode > debounceDelay)
+  if (currentTime - lastDebounceTime > debounceDelay)
   {
-    lastDebounceTimeMode = currentTime;
-    control_mode = ACTIVE_MODE; // 모드 변경 버튼 상태 변수
-  }
-  unsigned long currentTime = millis();
-  if (currentTime - lastActiveTime > debounceDelay)
-  {
-    lastDebounceTimeUp = currentTime;
+    lastDebounceTime = currentTime;
     bootButton = true;
+    displaySleepTime = millis(); // display 절전모드 시간 초기화
   }
 }
 
-
-/*------모드 변경 함수------*/
+/*------가열 / 냉각 모드 변경 함수------*/
 void changeControlMode(char control_device_mode) //열전소자 제어 함수
 {
   if (control_device_mode == HEATER_MODE)
@@ -164,37 +181,48 @@ void changeControlMode(char control_device_mode) //열전소자 제어 함수
   else
    return; // 유지 모드일 경우 아무 동작도 하지 않음
 }
+/*----------함수 선언부----------*/
 
+/*----------시스템 구상----------*/
+/*---GPIO핀 할당내용---*/
+//GPIO 1 : PWM 핀 (OUTPUT) -> 1
+//GPIO 2 : 냉각 신호 핀 (OUTPUT) -> 2
+//GPIO 3 : 가열 신호 핀 (OUTPUT) -> 3
+//GPIO 4 : DS18B20 데이터 핀
+//GPIO 5 : 설정온도 상승 버튼 핀
+//GPIO 6 : 설정온도 하강 버튼 핀
+//GPIO 7 : Booting / Home 버튼 핀
+//GPIO 8 : DISPLAY 핀 I2C SCL
+//GPIO 9 : DISPLAY 핀 I2C SDA 
 
+/*---Display Setting---*/
+// OLED display 설정
+//디스플레이 구현 시 고려할 점
+  // 부드러운 전환을 위해 0.5초 간격으로 화면을 업데이트
+  // 화면 전환 시 이전 화면을 지우고 새로운 화면을 그리는 방식으로 구현
+  // 모드당 화면을 나눔 ; 온도 측정 시 화면에 표현
+  // 시작시 전용 화면 출력 후
+  // 1. 온도 체크 알림 화면
+  // 2. 정지 화면 - 메인 화면임 
+  // 3. 작동 중 화면 - 현재 온도 / 설정온도 표시 ; 1초 간격으로 업데이트 ; 가열 / 냉각 모드 표시
+  // 4. 온도 유지 화면 - 설정 온도를 표시 / "{설정 온도}'C 유지중..." ; 1초 간격으로 업데이트 
+  // 배터리 잔량 표시 - 가능시 추가
+  // 온도 변환 시 전용 화면으로 전환 ; 전환 트리거 : 전원 버튼, 트리거 발생 시 화면 전환 후 버튼으로 
+  // 온도 설정, 전원버튼 한번 더 누를 시 설정 온도에 따라 모드 변환;
+//OLED display 함수
+/*----------시스템 구상----------*/
 
-// active pin 설정
-char activecontrol = 0; // 활성화 핀 상태 변수
-
-/*
----GPIO핀 사용 현황---
-GPIO 3 : PWM 핀
-GPIO 4 : DS18B20 데이터 핀
-GPIO 5 : 설정온도 상승 버튼 핀
-GPIO 6 : 설정온도 하강 버튼 핀
-GPIO 7 : 확인
-GPIO 8 : DISPLAY 핀 I2C SCL
-GPIO 9 : DISPLAY 핀 I2C SDA 
-GPIO 10 : 가열 모드 핀 (OUTPUT) -> 3
-GPIO 11 : 냉각 모드 핀 (OUTPUT) -> 2
-GPIO 12 : 시스템 설정 핀 -> 1
-*/
-
-/*------setup------*/
+/*----------setup----------*/
 void setup()
 {
   Serial.begin(115200);
-  /*-----pinMode INPUT_PULLUP-----*/
+  /*------pinMode INPUT_PULLUP------*/
   pinMode(ONE_WIRE_BUS, INPUT_PULLUP);
   pinMode(BUTTON_UP, INPUT_PULLUP);
   pinMode(BUTTON_DOWN, INPUT_PULLUP);
-  pinMode(ACTIVE_PIN, INPUT_PULLUP);
+  pinMode(BUTTON_BOOT, INPUT_PULLUP);
 
-  /*-----pinMode OUTPUT-----*/
+  /*------pinMode OUTPUT------*/
   pinMode(HEATER_PIN, OUTPUT);
   pinMode(COOLER_PIN, OUTPUT);
 
@@ -204,20 +232,22 @@ void setup()
   sensors.requestTemperatures(); // 온도 측정 요청
   
   /*------display설정부------*/
-  if (!display.begin(SSD1306_I2C_ADDRESS, SSD1306_I2C_ADDRESS))
+  u8g2.begin(); // display 초기화
+  u8g2.enableUTF8Print(); // UTF-8 문자 인코딩 사용
+  if (!u8g2.begin())
   {
-    Serial.println("SSD1306 allocation failed");
-    for (;;)
-      ;
+    Serial.println("Display initialization failed!");
+    for (;;); // 초기화 실패 시 무한 루프
   }
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
+  
+  u8g2.setFont(u8g2_font_ncenB08_tr); // 폰트 설정
+  u8g2.setFontMode(1); // 폰트 모드 설정
+  u8g2.setDrawColor(1); // 글자 색상 설정
 
   /*------Interrupt설정부------*/
   attachInterrupt(BUTTON_UP, upButtonF, FALLING);
   attachInterrupt(BUTTON_DOWN, downButtonF, FALLING);
-  attachInterrupt(ACTIVE_PIN, bootButtonF, FALLING); //
+  attachInterrupt(BUTTON_BOOT, bootButtonF, FALLING); //
 
   /*------PWM설정부------*/
   pinMode(PWM_PIN, OUTPUT); // PWM 핀 설정
@@ -226,11 +256,23 @@ void setup()
   
   ledcWrite(PWM_CHANNEL, pwmValue); // 초기 PWM 값 설정
 }
+/*----------setup----------*/
 
-/*------loop-------*/
+/*----------loop----------*/
 void loop()
 { 
-
+  /*------Starting DisplayPrint------*/
+  if(millis() < 3000) {
+    u8g2.clearBuffer(); // 버퍼 초기화
+    u8g2.setCursor(0, 10); // 커서 위치 설정
+    u8g2.println("5조 : 임선진 안대현 유경도"); // 시작 메시지 출력
+    u8g2.println("작품명 : Samrt Tumbler"); // 작품명 출력작
+    u8g2.print("2025년 졸업작품작");
+    contrastUpDisplay();
+    delay(1000); // 100ms 대기
+    contrastDownDisplay();
+    delay(1000); // 100ms 대기
+  }
   /*----------동작 모드 설정부----------*/
   /*-----loop 지역 변수 선언부-----*/
   static float lastTemperature = 0; // 마지막 온도 저장 변수
@@ -239,198 +281,53 @@ void loop()
   volatile static char lastmode = STOP_MODE; // 마지막 모드 저장 변수
 
   /*-----온도 측정부-----*/
-  /*if(sensors.isConversionComplete()){
+  if(sensors.isConversionComplete()){
     temperatureC = sensors.getTempCByIndex(0); // 측정온도 저장
     sensors.requestTemperatures(); // 다음 측정을 위해 온도 요청
-  }*/
+  }
   /*-----온도 센서 오류 발생 시 오류 메세지 출력-----*/
-  if (temperatureC == DEVICE_DISCONNECTED_C)
+  if(temperatureC == DEVICE_DISCONNECTED_C)
   {
-    Serial.println(U"Error: Sensor not found!");
-    display.clearDisplay();
-    display.setTextSize(2);
-    display.setCursor(0, 0);
-    display.println("Sensor Error");
-    display.display();
-    delay(1000); // 1초 대기 후 다시 시도
-    return;      // 에러 발생 시 루프 종료
+    u8g2.println("센서에 문제가 있어요");
+    Serial.println("센서에 문제가 있어요");
+    delay(3);
+    while(1) {
+    u8g2.clearBuffer();
+    if(temperatureC != DEVICE_DISCONNECTED_C)
+      break; // 센서가 정상적으로 연결되면 루프 종료
+    u8g2.setCursor(0, 30);
+    u8g2.print("센서 감지중");
+    u8g2.print("센서 감지중.");
+    u8g2.print("센서 감지중..");
+    u8g2.print("센서 감지중...");
+    u8g2.sendBuffer();
+    delay(500); // 0.5초 대기 후 다시 시도
+    }
   }
 
 
-  /*-----User Mode Setting I/O-----*/
-  if(control_mode == STOP_MODE) // 정지 모드일 때
-  { 
-    user_enter = false; // 사용자 모드 설정 초기화
-    mainDisplayPrint();
-    display.display(); // display 출력
-    if (upButton == true) 
-    {
-    user_control_mode += 1; // upButton이 눌리면 모드 증가
-      if (user_control_mode > 2) 
-        user_control_mode = 0; // 상태 초기화
-      Serial.println("change mode");
-      upButton = false; // upButton 초기화
-    }
-    if(downButton == true) 
-    { // downButton이 눌리면 모드 변경
-      if (user_control_mode > 0) 
-        user_control_mode -= 1; // downButton이 눌리면 모드 감소
-      if (user_control_mode == 0)
-        user_control_mode = 2; // 상태 초기화
-      Serial.println("change mode");
-      downButton = false; // downButton 초기화
-    }
-    if (bootButton == true) 
-    { // bootButton이 눌리면 모드 변경
-      control_mode = user_control_mode; // 모드 변경
-    }
-    lastmode = STOP_MODE;
-  }
+  /*------Main System Setting------*/
 
-   /*-----------PWM 설정부 / 동작----------*/
-  //ACTIVE_MODE 동작
-  if (control_mode == ACTIVE_MODE) { 
-    pwmValue = map(temperatureC, lastTemperature, setTemperature, 0, 255); // 온도에 따라 PWM 값 설정
-    if (bootButton == true) { // bootButton이 눌리면 모드 변경
-      setTemperature = userSetTemperature; // 실행
-      bootButton = false; // bootButton 초기화
-    }
-    if (temperatureC < setTemperature) // 현재 온도가 설정 온도보다 낮을 때
-    {
-      pwmValue = map(temperatureC, SYSTEM_MIN_TEMPERATURE, SYSTEM_MAX_TEMPERATURE, 0, 255); // PWM 값 설정
-      changeControlMode(HEATER_MODE); // 가열 모드로 변경
-      //ledcWrite(PWM_CHANNEL, pwmValue); // PWM 값 출력
-      displayPrint("Heating");
-      displayPrint("Heating.");
-      displayPrint("Heating..");
-      displayPrint("Heating...");
-    }
-    else if (temperatureC > setTemperature) // 현재 온도가 설정 온도보다 높을 때
-    {
-      pwmValue = map(SYSTEM_MAX_TEMPERATURE - temperatureC, SYSTEM_MIN_TEMPERATURE, SYSTEM_MAX_TEMPERATURE, 0, 255); // PWM 값 설정
-      changeControlMode(COOLER_MODE); // 냉각 모드로 변경
-      //ledcWrite(PWM_CHANNEL, pwmValue); // PWM 값 출력
-      displayPrint("Cooling");
-      displayPrint("Cooling.");
-      displayPrint("Cooling..");
-      displayPrint("Cooling...");
-    }
-    else if(temperatureC == setTemperature) // 현재 온도가 설정 온도와 같을 때
-    {
-      pwmValue = 0; // PWM 값 0으로 설정
-      control_mode = KEEP_TEMPERATURE_MODE; // 유지 모드로 변경
-      lastTemperature = temperatureC; // 마지막 온도 업데이트
-      //ledcWrite(PWM_CHANNEL, pwmValue); // PWM 값 출력
-    }
-    //버튼 작동 부분  
-    if(upButton == true) // 설정온도 상승 버튼이 눌리면
-    {
-      userSetTemperature += 1; // 설정온도 상승
-      if(userSetTemperature > MAX_TEMPERATURE) // 최대 온도 초과 시
-        userSetTemperature = MAX_TEMPERATURE; // 최대 온도로 설정
-      upButton = false; // 버튼 초기화
-    }
-    if(downButton == true) // 설정온도 하강 버튼이 눌리면
-    {
-      userSetTemperature -= 1; // 설정온도 하강
-      if(userSetTemperature < MIN_TEMPERATURE) // 최소 온도 초과 시
-        userSetTemperature = MIN_TEMPERATURE; // 최소 온도로 설정
-      downButton = false; // 버튼 초기화
-    }
-    lastmode = ACTIVE_MODE; // 마지막 모드 업데이트
-  }
 
-  //KEEP_TEMPERATURE_MODE 동작
-  if (control_mode == KEEP_TEMPERATURE_MODE) { // 유지 모드일 때
-    setTemperature = temperatureC;
-    if (temperatureC > setTemperature) // 현재 온도가 설정 온도보다 낮을 때  
-    {
-      if (lastTemperature-3 > temperatureC)
-      {
-      pwmValue = map(lastTemperature, SYSTEM_MIN_TEMPERATURE, SYSTEM_MAX_TEMPERATURE, 0, 128); // PWM 값 설정
-      changeControlMode(HEATER_MODE); // 가열 모드로 변경
-      //ledcWrite(PWM_CHANNEL, pwmValue); // PWM 값 출력
-      }
-    }
-    else if (temperatureC < setTemperature) // 현재 온도가 설정 온도보다 높을 때
-    {
-      if (lastTemperature+3 < temperatureC) // 마지막 온도와 현재 온도가 같을 때
-      {
-        pwmValue = map(SYSTEM_MAX_TEMPERATURE - lastTemperature, SYSTEM_MIN_TEMPERATURE, SYSTEM_MAX_TEMPERATURE, 0, 128); // PWM 값 설정
-        changeControlMode(COOLER_MODE); // 냉각 모드로 변경
-      //ledcWrite(PWM_CHANNEL, pwmValue); // PWM 값 출력
-      }
-    }
-    else if(temperatureC == setTemperature) // 현재 온도가 설정 온도와 같을 때
-    {
-      pwmValue = 0; // PWM 값 0으로 설정
-      //ledcWrite(PWM_CHANNEL, pwmValue); // PWM 값 출력
-    }
-    if(upButton == true) // 설정온도 상승 버튼이 눌리면
-    {
-      userSetTemperature += 1; // 설정온도 상승
-      if(userSetTemperature > MAX_TEMPERATURE) // 최대 온도 초과 시
-        userSetTemperature = MAX_TEMPERATURE; // 최대 온도로 설정
-      upButton = false; // 버튼 초기화
-    }
-    if(downButton == true) // 설정온도 하강 버튼이 눌리면
-    {
-      userSetTemperature -= 1; // 설정온도 하강
-      if(userSetTemperature < MIN_TEMPERATURE) // 최소 온도 초과 시
-        userSetTemperature = MIN_TEMPERATURE; // 최소 온도로 설정
-      downButton = false; // 버튼 초기화
-    }
-    if (bootButton == true) { // bootButton이 눌리면 모드 변경
-      setTemperature = userSetTemperature; // 모드 변경
-      control_mode = ACTIVE_MODE;
-      bootButton = false; // bootButton 초기화
-    }
-    lastmode = KEEP_TEMPERATURE_MODE; // 마지막 모드 업데이트
+  /*-----PWM 설정부 / 동작-----*/
+
+
+  /*-----ACTIVE_MODE 동작-----*/
+
+
+  /*-----KEEP_TEMPERATURE_MODE 동작-----*/
+  
+
+  /*-----Display Energe Save Mode-----*/
+  if (displaySleepTime + 10000 < millis()) // 10초 이상 버튼이 눌리지 않으면 절전모드로 전환
+  {
+    displaySleep = true; // 절전모드 상태 변수 설정
+    u8g2.setPowerSave(1); // 절전모드 설정
   }
-  delay(100); // 100ms 대기
+  else if (displaySleepTime + 10000 > millis()) // 버튼이 눌리면 절전모드 해제
+  {
+    displaySleep = false; // 절전모드 해제
+    u8g2.setPowerSave(0); // 절전모드 해제
+  }
 }
-/*-----loop 종료-----*/
-
-/*-----display 출력 간소화 함수-----*/
-void displayPrint(const char *text)
-{
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setCursor(0, 0);
-  display.println(text);
-  //
-  display.setTextSize(0.5);
-  display.setCursor(0, 20);
-  display.println("setTemperature: ");
-  display.setCursor(30, 30);
-  display.print(userSetTemperature);
-  display.println(" C ");
-  display.println("Temperature: ");
-  display.setCursor(30, 50);
-  display.print(temperatureC);
-  display.println(" C");
-  display.display();
-}
-
-/*-----Main Display Print-----*/
-void mainDisplayPrint()
-{
-  display.clearDisplay(); // display 초기화
-  display.setTextSize(2); // 텍스트 크기 설정
-  display.setCursor(0, 0); // 커서 위치 설정
-  display.println("Set Mode");
-  display.setTextSize(1); // 텍스트 크기 설정
-  display.setCursor(0, 25); // 커서 위치 설정
-  if(user_control_mode == STOP_MODE) {
-    display.write("STOP_MODE");
-  }
-  else if(user_control_mode == ACTIVE_MODE) {
-    display.write("ACTIVE_MODE");
-  }
-  else if(user_control_mode == KEEP_TEMPERATURE_MODE) {
-    display.write("KEEP_MODE");
-  }
-  display.setCursor(0, 50); // 커서 위치 설정
-  display.print(temperatureC);
-  display.print(" C ");
-}
+/*----------loop----------*/
