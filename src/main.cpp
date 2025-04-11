@@ -110,19 +110,17 @@ void contrastDownDisplay()// 대비 조정 함수 DOWN
 /*-----Display 기본 출력 함수-----*/
 void displayPrint(const char *text)// display 출력 함수
 {
-  u8g2.clearDisplay();
-  u8g2.setCursor(0, 0);
-  u8g2.println(text);
-  u8g2.setCursor(0, 20);
-  u8g2.println("setTemperature: ");
-  u8g2.setCursor(30, 30);
+  u8g2.setFont(u8g2_font_ncenB08_tr); // 폰트 설정
+  u8g2.setCursor(0, 30);
+  u8g2.println("설정온도 : ");
+  u8g2.setCursor(u8g2.getCursorX() + 10, u8g2.getCursorY());
   u8g2.print(userSetTemperature);
-  u8g2.println(" C ");
-  u8g2.println("Temperature: ");
-  u8g2.setCursor(30, 50);
+  u8g2.print(" C ");
+  u8g2.setCursor(0, u8g2.getCursorY() + 15);
+  u8g2.println("현재온도 : ");
+  u8g2.setCursor(u8g2.getCursorX() + 10, u8g2.getCursorY());
   u8g2.print(temperatureC);
   u8g2.println(" C");
-  u8g2.display();
 }
 
 /*------Interrupt 함수 정의 부분------*/
@@ -210,6 +208,56 @@ void changeControlMode(char control_device_mode) //열전소자 제어 함수
   // 온도 변환 시 전용 화면으로 전환 ; 전환 트리거 : 전원 버튼, 트리거 발생 시 화면 전환 후 버튼으로 
   // 온도 설정, 전원버튼 한번 더 누를 시 설정 온도에 따라 모드 변환;
 //OLED display 함수
+
+/*---Display Structure---*/
+/* UI 만드는 사람들 ㄹㅇ 존경스럽다
+starting Display :
+|Smart Tumbler System      [Batery : 100%]|
+|-----------------------------------------|
+|제작 : 5조 임선진 안대현 유경도            |
+|작품명 : Smart Tumbler System            |
+|----------------------------------------|
+
+basic Display :
+|Smart Tumbler System      [Batery : 100%]|
+|-----------------------------------------|
+|현재 온도 : XX.X C                        |
+|설정 온도 : XX.X C                        |
+|대기중...(..개수 변화)                    |
+
+active Display :
+|Smart Tumbler System      [Batery : 100%]|
+|-----------------------------------------|
+|현재 온도 : XX.X C (가열 / 냉각 중)        |
+|목표 온도 : XX.X C                        |
+|온도 조절중...                            |
+
+temperature maintanence Display :
+|Smart Tumbler System      [Batery : 100%]|
+|-----------------------------------------|
+|현재 온도 : XX.X C (설정 온도 : )         |
+|가열 / 냉각 상태                          |
+|온도 유지중...                           |
+
+Setting Temperature Display :
+|Smart Tumbler System      [Batery : 100%]|
+|-----------------------------------------|
+|          목표 온도 : XX.X C             |
+|       온도증가 : ▲ / 온도감소 : ▼        |
+|완료하고 싶으시면 전원 버튼을 눌러주세요.   |
+
+Ended Setting Display :
+|Smart Tumbler System      [Batery : 100%]|
+|-----------------------------------------|
+|목표 온도 : XX.X C로 설정 완료 했어요!     |
+|온도를 조절하는 동안 기다려주세요.         |
+|※온도 조절 중 화상에 주의하세요!          |
+|-----------------------------------------|
+
+
+*/
+
+
 /*----------시스템 구상----------*/
 
 /*----------setup----------*/
@@ -263,6 +311,8 @@ void loop()
 { 
   /*------Starting DisplayPrint------*/
   if(millis() < 3000) {
+    u8g2.setPowerSave(0); // 절전모드 해제
+    u8g2.setFont(u8g2_font_ncenB12_tr); // 폰트 설정
     u8g2.clearBuffer(); // 버퍼 초기화
     u8g2.setCursor(0, 10); // 커서 위치 설정
     u8g2.println("5조 : 임선진 안대현 유경도"); // 시작 메시지 출력
@@ -307,16 +357,55 @@ void loop()
 
 
   /*------Main System Setting------*/
-
+  /*-----Main Display for User-----*/
+  
 
   /*-----PWM 설정부 / 동작-----*/
 
 
   /*-----ACTIVE_MODE 동작-----*/
-
+  if (control_mode == ACTIVE_MODE) // 활성화 모드일 경우
+  {
+    if (temperatureC < userSetTemperature) // 현재 온도가 설정온도보다 낮을 경우
+    {
+      changeControlMode(HEATER_MODE); // 가열 모드로 변경
+      pwmValue = map(userSetTemperature, SYSTEM_MIN_TEMPERATURE, SYSTEM_MAX_TEMPERATURE, 0, 255); // PWM 값 설정
+      ledcWrite(PWM_CHANNEL, pwmValue); // PWM 출력
+    }
+    else if (temperatureC > userSetTemperature) // 현재 온도가 설정온도보다 높을 경우
+    {
+      changeControlMode(COOLER_MODE); // 냉각 모드로 변경
+      pwmValue = map(userSetTemperature, SYSTEM_MIN_TEMPERATURE, SYSTEM_MAX_TEMPERATURE, 0, 255); // PWM 값 설정
+      ledcWrite(PWM_CHANNEL, pwmValue); // PWM 출력
+    }
+    else if (temperatureC == userSetTemperature) // 현재 온도가 설정온도와 같을 경우
+    {
+      changeControlMode(STOP_MODE); // 정지 모드로 변경
+      ledcWrite(PWM_CHANNEL, 0); // PWM 출력 중지
+    }
+  }
 
   /*-----KEEP_TEMPERATURE_MODE 동작-----*/
-  
+  if(control_mode == KEEP_TEMPERATURE_MODE) // 유지 모드일 경우
+  {
+    if (temperatureC < userSetTemperature) // 현재 온도가 설정온도보다 낮을 경우
+    {
+      changeControlMode(HEATER_MODE); // 가열 모드로 변경
+      pwmValue = map(userSetTemperature, SYSTEM_MIN_TEMPERATURE, SYSTEM_MAX_TEMPERATURE, 0, 255); // PWM 값 설정
+      ledcWrite(PWM_CHANNEL, pwmValue); // PWM 출력
+    }
+    else if (temperatureC > userSetTemperature) // 현재 온도가 설정온도보다 높을 경우
+    {
+      changeControlMode(COOLER_MODE); // 냉각 모드로 변경
+      pwmValue = map(userSetTemperature, SYSTEM_MIN_TEMPERATURE, SYSTEM_MAX_TEMPERATURE, 0, 255); // PWM 값 설정
+      ledcWrite(PWM_CHANNEL, pwmValue); // PWM 출력
+    }
+    else if (temperatureC == userSetTemperature) // 현재 온도가 설정온도와 같을 경우
+    {
+      changeControlMode(STOP_MODE); // 정지 모드로 변경
+      ledcWrite(PWM_CHANNEL, 0); // PWM 출력 중지
+    }
+  }
 
   /*-----Display Energe Save Mode-----*/
   if (displaySleepTime + 10000 < millis()) // 10초 이상 버튼이 눌리지 않으면 절전모드로 전환
